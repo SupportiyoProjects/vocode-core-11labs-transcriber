@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import List, Literal, Optional
 
-from pydantic.v1 import validator
+from pydantic.v1 import Field, validator
 
 import vocode.streaming.livekit.constants as LiveKitConstants
 from vocode.streaming.input_device.base_input_device import BaseInputDevice
@@ -192,7 +192,7 @@ class Transcription(BaseModel):
 class ElevenLabsScribeTranscriberConfig(TranscriberConfig):
     """Configuration for the ElevenLabs Scribe transcriber."""
     
-    type: Literal["eleven_labs_scribe"] = "eleven_labs_scribe"
+    model_type: Literal["eleven_labs_scribe"] = "eleven_labs_scribe"
     
     # ElevenLabs Scribe specific parameters
     model_id: str = "scribe_v1"  # Default model
