@@ -187,3 +187,17 @@ class Transcription(BaseModel):
             if self.duration_seconds
             else None
         )
+
+
+class ElevenLabsScribeTranscriberConfig(TranscriberConfig):
+    """Configuration for the ElevenLabs Scribe transcriber."""
+    
+    type: Literal["eleven_labs_scribe"] = "eleven_labs_scribe"
+    
+    # ElevenLabs Scribe specific parameters
+    model_id: str = "scribe_v1"  # Default model
+    api_key: Optional[str] = None
+    language: Optional[str] = None
+    detect_language: bool = False
+    transcription_hints: Optional[List[str]] = None
+    buffer_size_seconds: float = 2.0  # Size of audio buffer before sending for transcription
