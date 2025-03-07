@@ -3,15 +3,20 @@ import base64
 import json
 import queue
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Literal, Optional
 
 import aiohttp
 import sentry_sdk
 from loguru import logger
+from pydantic.v1 import Field
 
 from vocode import getenv
 from vocode.streaming.models.audio import AudioEncoding
-from vocode.streaming.models.transcriber import ElevenLabsScribeTranscriberConfig, Transcription
+from vocode.streaming.models.transcriber import (
+    ElevenLabsScribeTranscriberConfig,
+    TranscriberConfig,
+    Transcription,
+)
 from vocode.streaming.transcriber.base_transcriber import BaseThreadAsyncTranscriber
 from vocode.utils.sentry_utils import CustomSentrySpans, sentry_create_span
 
@@ -177,7 +182,7 @@ class ElevenLabsScribeTranscriber(BaseThreadAsyncTranscriber[ElevenLabsScribeTra
 class ElevenLabsScribeTranscriberConfig(TranscriberConfig):
     """Configuration for the ElevenLabs Scribe transcriber."""
     
-    type: Literal["eleven_labs_scribe"] = "eleven_labs_scribe"
+    transcriber_type: Literal["eleven_labs_scribe"] = Field("eleven_labs_scribe", alias="type")
     
     # ElevenLabs Scribe specific parameters
     model_id: str = "scribe_v1"  # Default model
