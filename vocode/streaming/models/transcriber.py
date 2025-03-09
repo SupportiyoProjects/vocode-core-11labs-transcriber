@@ -166,6 +166,9 @@ class ElevenLabsTranscriberConfig(TranscriberConfig, type=TranscriberType.ELEVEN
     buffer_size_seconds: float = 2.0
     model_id: str
     language: Optional[str] = "en"
+    type: str = "elevenlabs"
+    api_key: Optional[str] = None
+    buffer_size_seconds: float = Field(default=2.0)
 
 
 class Transcription(BaseModel):

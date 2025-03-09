@@ -1,146 +1,144 @@
 import asyncio
 import audioop
-import io
-import requests
-from typing import Optional
+import logging
+import os
+import queue
+import time
+from typing import Dict, List, Optional, Tuple
 
-import numpy as np
+import aiohttp
 from loguru import logger
+from pydantic import Field
 
-from vocode import getenv
-from vocode.streaming.models.audio import AudioEncoding
-from vocode.streaming.models.transcriber import (
-    Transcription,
-    TimeEndpointingConfig,
-    PunctuationEndpointingConfig,
-    ElevenLabsTranscriberConfig,
-)
-from vocode.streaming.transcriber.base_transcriber import BaseAsyncTranscriber
+from vocode.streaming.models.audio_encoding import AudioEncoding
+from vocode.streaming.models.transcriber import ElevenLabsTranscriberConfig
+from vocode.streaming.transcriber.base_transcriber import BaseTranscriber, Transcription
 
-class ElevenLabsTranscriber(BaseAsyncTranscriber[ElevenLabsTranscriberConfig]):
-    def __init__(
-        self,
-        transcriber_config: ElevenLabsTranscriberConfig,
-        api_key: Optional[str] = None,
-    ):
+class ElevenLabsTranscriber(BaseTranscriber):
+    def __init__(self, transcriber_config: ElevenLabsTranscriberConfig):
         super().__init__(transcriber_config)
-        self.api_key = api_key or getenv("ELEVEN_LABS_API_KEY")
+        self.transcriber_config = transcriber_config
+        self.api_key = transcriber_config.api_key or os.environ.get("ELEVENLABS_API_KEY")
         if not self.api_key:
-            raise Exception(
-                "Please set ELEVEN_LABS_API_KEY environment variable or pass it as a parameter"
-            )
+            raise ValueError("ElevenLabs API key is required")
         
-        self._ended = False
+        # Initialize the audio buffer
         self.buffer = bytearray()
-        self.audio_cursor = 0
-        self.model_id = self.transcriber_config.model_id
+        self.buffer_size_seconds = 2.0  # Buffer 2 seconds of audio before sending
+        self.buffer_size_bytes = int(self.transcriber_config.sampling_rate * 2 * self.buffer_size_seconds)  # 16-bit audio = 2 bytes per sample
         
-        # Configure endpointing if provided
-        if isinstance(
-            self.transcriber_config.endpointing_config,
-            (TimeEndpointingConfig, PunctuationEndpointingConfig),
-        ):
-            self.time_cutoff_seconds = self.transcriber_config.endpointing_config.time_cutoff_seconds
-        else:
-            self.time_cutoff_seconds = 0.4  # Default value
-            
-        self.last_transcription_time = 0
+        # Initialize state
+        self._ended = False
+        self.is_ready = True
+
+    async def _transcribe_chunk(self, audio_chunk: bytes) -> Optional[str]:
+        """Send audio chunk to ElevenLabs API and get transcription"""
+        url = "https://api.elevenlabs.io/v1/speech-to-text"
         
-    async def ready(self):
-        return True
-    
-    async def _run_loop(self):
-        await self.process()
-    
-    def send_audio(self, chunk):
-        # Convert mulaw to linear if needed
-        if self.transcriber_config.audio_encoding == AudioEncoding.MULAW:
-            sample_width = 1
-            if isinstance(chunk, np.ndarray):
-                chunk = chunk.astype(np.int16)
-                chunk = chunk.tobytes()
-            chunk = audioop.ulaw2lin(chunk, sample_width)
+        headers = {
+            "xi-api-key": self.api_key,
+            "Content-Type": "audio/wav"  # ElevenLabs expects WAV format
+        }
         
-        self.buffer.extend(chunk)
+        # Create a simple WAV header for the PCM data
+        # This is a minimal WAV header for 16-bit PCM mono audio
+        sample_rate = self.transcriber_config.sampling_rate
+        channels = 1
+        bits_per_sample = 16
         
-        # Process buffer when it reaches the configured size
-        if (
-            len(self.buffer) / (2 * self.transcriber_config.sampling_rate)
-        ) >= self.transcriber_config.buffer_size_seconds:
-            self.consume_nonblocking(self.buffer)
-            self.buffer = bytearray()
-    
-    async def terminate(self):
-        self._ended = True
-        await super().terminate()
-    
+        # WAV header
+        wav_header = bytearray()
+        # RIFF header
+        wav_header.extend(b'RIFF')
+        wav_header.extend((36 + len(audio_chunk)).to_bytes(4, 'little'))  # File size - 8
+        wav_header.extend(b'WAVE')
+        # fmt chunk
+        wav_header.extend(b'fmt ')
+        wav_header.extend((16).to_bytes(4, 'little'))  # Subchunk1Size
+        wav_header.extend((1).to_bytes(2, 'little'))  # AudioFormat (PCM)
+        wav_header.extend((channels).to_bytes(2, 'little'))  # NumChannels
+        wav_header.extend((sample_rate).to_bytes(4, 'little'))  # SampleRate
+        wav_header.extend((sample_rate * channels * bits_per_sample // 8).to_bytes(4, 'little'))  # ByteRate
+        wav_header.extend((channels * bits_per_sample // 8).to_bytes(2, 'little'))  # BlockAlign
+        wav_header.extend((bits_per_sample).to_bytes(2, 'little'))  # BitsPerSample
+        # data chunk
+        wav_header.extend(b'data')
+        wav_header.extend((len(audio_chunk)).to_bytes(4, 'little'))  # Subchunk2Size
+        
+        # Combine header and audio data
+        wav_data = wav_header + audio_chunk
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, data=wav_data) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return result.get("text", "")
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"ElevenLabs API error: {response.status} - {error_text}")
+                        return None
+        except Exception as e:
+            logger.error(f"Error in ElevenLabs transcription: {e}")
+            return None
+
     async def process(self):
-        self.audio_cursor = 0
-        
-        while not self._ended:
-            try:
-                chunk = await self.input_audio_queue.get()
-                if chunk is None:
-                    continue
-
-                # Convert MULAW to PCM if needed
-                if self.transcriber_config.audio_encoding == AudioEncoding.MULAW:
-                    chunk = audioop.ulaw2lin(chunk, 2)  # Convert to 16-bit PCM
-
-                # Add to buffer
-                self.buffer.extend(chunk)
-                
-                # Process buffer when it reaches the configured size
-                if (
-                    len(self.buffer) / (2 * self.transcriber_config.sampling_rate)
-                ) >= self.transcriber_config.buffer_size_seconds:
-                    self.consume_nonblocking(self.buffer)
-                    self.buffer = bytearray()
-                
-                # Send to ElevenLabs for transcription using requests
+        try:
+            while not self._ended:
                 try:
-                    url = "https://api.elevenlabs.io/v1/speech-to-text"
-                    headers = {"xi-api-key": self.api_key}
+                    # Get audio chunk from the queue
+                    chunk = await self.input_audio_queue.get()
+                    if chunk is None:
+                        continue
+
+                    # Convert MULAW to PCM if needed
+                    if self.transcriber_config.audio_encoding == AudioEncoding.MULAW:
+                        chunk = audioop.ulaw2lin(chunk, 2)  # Convert to 16-bit PCM
+
+                    # Add to buffer
+                    self.buffer.extend(chunk)
                     
-                    files = {"file": ("audio.wav", io.BytesIO(self.buffer), "audio/wav")}
-                    params = {"model_id": self.model_id}
-                    
-                    # Use asyncio to run the request in a thread pool
-                    loop = asyncio.get_event_loop()
-                    response = await loop.run_in_executor(
-                        None,
-                        lambda: requests.post(url, headers=headers, files=files, params=params)
-                    )
-                    
-                    if response.status_code == 200:
-                        response_json = response.json()
-                        transcription_text = response_json.get("text", "")
+                    # Process buffer when it reaches the desired size
+                    if len(self.buffer) >= self.buffer_size_bytes:
+                        # Extract the buffer content
+                        audio_data = bytes(self.buffer)
+                        self.buffer.clear()
                         
-                        if transcription_text:
-                            # Determine if this should be a final transcription
-                            is_final = False
-                            if transcription_text.strip().endswith(('.', '!', '?')):
-                                is_final = True
-                            
-                            # Create and send the transcription
-                            self.produce_nonblocking(
+                        # Send for transcription
+                        transcription = await self._transcribe_chunk(audio_data)
+                        if transcription and transcription.strip():
+                            await self.output_transcription_queue.put(
                                 Transcription(
-                                    message=transcription_text,
-                                    confidence=0.9,  # ElevenLabs doesn't provide confidence scores
-                                    is_final=is_final
+                                    message=transcription,
+                                    confidence=1.0,  # ElevenLabs doesn't provide confidence scores
+                                    is_final=True
                                 )
                             )
-                            
-                            # Reset buffer if final
-                            if is_final:
-                                self.buffer = bytearray()
-                    else:
-                        logger.error(f"ElevenLabs API error: {response.status_code} - {response.text}")
-                    
-                except Exception as e:
-                    logger.error(f"Error in ElevenLabs transcription: {e}")
                 
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in ElevenLabs transcriber process: {e}")
+                except asyncio.CancelledError:
+                    logger.debug("ElevenLabs transcriber task cancelled")
+                    break
+                except Exception as e:
+                    logger.error(f"Error in ElevenLabs transcriber process: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Fatal error in ElevenLabs transcriber: {e}")
+        finally:
+            # Process any remaining audio in the buffer
+            if len(self.buffer) > 0:
+                try:
+                    audio_data = bytes(self.buffer)
+                    transcription = await self._transcribe_chunk(audio_data)
+                    if transcription and transcription.strip():
+                        await self.output_transcription_queue.put(
+                            Transcription(
+                                message=transcription,
+                                confidence=1.0,
+                                is_final=True
+                            )
+                        )
+                except Exception as e:
+                    logger.error(f"Error processing final buffer: {e}")
+
+    async def terminate(self):
+        self._ended = True
