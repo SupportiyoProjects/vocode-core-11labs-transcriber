@@ -13,9 +13,9 @@ from vocode.streaming.models.transcriber import (
     Transcription,
     TimeEndpointingConfig,
     PunctuationEndpointingConfig,
+    ElevenLabsTranscriberConfig,
 )
 from vocode.streaming.transcriber.base_transcriber import BaseAsyncTranscriber
-from vocode.streaming.models.transcriber import ElevenLabsTranscriberConfig
 
 class ElevenLabsTranscriber(BaseAsyncTranscriber[ElevenLabsTranscriberConfig]):
     def __init__(

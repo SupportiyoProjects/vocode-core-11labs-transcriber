@@ -162,6 +162,12 @@ class RevAITranscriberConfig(TranscriberConfig, type=TranscriberType.REV_AI.valu
     pass
 
 
+class ElevenLabsTranscriberConfig(TranscriberConfig, type=TranscriberType.ELEVEN_LABS.value):
+    buffer_size_seconds: float = 2.0
+    model_id: str
+    language: Optional[str] = "en"
+
+
 class Transcription(BaseModel):
     message: str
     confidence: float
