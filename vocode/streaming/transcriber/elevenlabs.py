@@ -10,7 +10,7 @@ import aiohttp
 from loguru import logger
 from pydantic import Field
 
-from vocode.streaming.models.audio_encoding import AudioEncoding
+from vocode.streaming.models.audio import AudioEncoding
 from vocode.streaming.models.transcriber import ElevenLabsTranscriberConfig
 from vocode.streaming.transcriber.base_transcriber import BaseTranscriber, Transcription
 
