@@ -1,10 +1,10 @@
 import asyncio
 import audioop
 import io
+import requests
 from typing import Optional
 
 import numpy as np
-from elevenlabs import ElevenLabs
 from loguru import logger
 
 from vocode import getenv
@@ -33,7 +33,6 @@ class ElevenLabsTranscriber(BaseAsyncTranscriber[ElevenLabsTranscriberConfig]):
         self._ended = False
         self.buffer = bytearray()
         self.audio_cursor = 0
-        self.client = ElevenLabs(api_key=self.api_key)
         self.model_id = self.transcriber_config.model_id
         
         # Configure endpointing if provided
@@ -98,33 +97,45 @@ class ElevenLabsTranscriber(BaseAsyncTranscriber[ElevenLabsTranscriberConfig]):
                 
                 wav_file.seek(0)
                 
-                # Send to ElevenLabs for transcription
+                # Send to ElevenLabs for transcription using requests
                 try:
-                    response = self.client.speech_to_text.convert(
-                        model_id=self.model_id,
-                        file=wav_file
+                    url = "https://api.elevenlabs.io/v1/speech-to-text"
+                    headers = {"xi-api-key": self.api_key}
+                    
+                    files = {"file": ("audio.wav", wav_file, "audio/wav")}
+                    params = {"model_id": self.model_id}
+                    
+                    # Use asyncio to run the request in a thread pool
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: requests.post(url, headers=headers, files=files, params=params)
                     )
                     
-                    if response and hasattr(response, 'text'):
-                        transcription_text = response.text
+                    if response.status_code == 200:
+                        response_json = response.json()
+                        transcription_text = response_json.get("text", "")
                         
-                        # Determine if this should be a final transcription
-                        is_final = False
-                        if transcription_text.strip().endswith(('.', '!', '?')):
-                            is_final = True
-                        
-                        # Create and send the transcription
-                        self.produce_nonblocking(
-                            Transcription(
-                                message=transcription_text,
-                                confidence=0.9,  # ElevenLabs doesn't provide confidence scores
-                                is_final=is_final
+                        if transcription_text:
+                            # Determine if this should be a final transcription
+                            is_final = False
+                            if transcription_text.strip().endswith(('.', '!', '?')):
+                                is_final = True
+                            
+                            # Create and send the transcription
+                            self.produce_nonblocking(
+                                Transcription(
+                                    message=transcription_text,
+                                    confidence=0.9,  # ElevenLabs doesn't provide confidence scores
+                                    is_final=is_final
+                                )
                             )
-                        )
-                        
-                        # Reset buffer if final
-                        if is_final:
-                            self.buffer = bytearray()
+                            
+                            # Reset buffer if final
+                            if is_final:
+                                self.buffer = bytearray()
+                    else:
+                        logger.error(f"ElevenLabs API error: {response.status_code} - {response.text}")
                     
                 except Exception as e:
                     logger.error(f"Error in ElevenLabs transcription: {e}")
