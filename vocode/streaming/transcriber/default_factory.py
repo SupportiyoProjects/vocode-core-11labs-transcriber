@@ -6,6 +6,7 @@ from vocode.streaming.models.transcriber import (
     GoogleTranscriberConfig,
     RevAITranscriberConfig,
     TranscriberConfig,
+    ElevenLabsTranscriberConfig,
 )
 from vocode.streaming.transcriber.abstract_factory import AbstractTranscriberFactory
 from vocode.streaming.transcriber.assembly_ai_transcriber import AssemblyAITranscriber
@@ -14,6 +15,7 @@ from vocode.streaming.transcriber.deepgram_transcriber import DeepgramTranscribe
 from vocode.streaming.transcriber.gladia_transcriber import GladiaTranscriber
 from vocode.streaming.transcriber.google_transcriber import GoogleTranscriber
 from vocode.streaming.transcriber.rev_ai_transcriber import RevAITranscriber
+from vocode.streaming.transcriber.elevenlabs import ElevenLabsTranscriber
 
 
 class DefaultTranscriberFactory(AbstractTranscriberFactory):
@@ -33,5 +35,7 @@ class DefaultTranscriberFactory(AbstractTranscriberFactory):
             return AzureTranscriber(transcriber_config)
         elif isinstance(transcriber_config, GladiaTranscriberConfig):
             return GladiaTranscriber(transcriber_config)
+        elif isinstance(transcriber_config, ElevenLabsTranscriberConfig):
+            return ElevenLabsTranscriber(transcriber_config)
         else:
             raise Exception("Invalid transcriber config")

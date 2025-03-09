@@ -79,30 +79,30 @@ class ElevenLabsTranscriber(BaseAsyncTranscriber[ElevenLabsTranscriberConfig]):
         
         while not self._ended:
             try:
-                data = await self._input_queue.get()
-                if data is None:
-                    break
+                chunk = await self.input_audio_queue.get()
+                if chunk is None:
+                    continue
+
+                # Convert MULAW to PCM if needed
+                if self.transcriber_config.audio_encoding == AudioEncoding.MULAW:
+                    chunk = audioop.ulaw2lin(chunk, 2)  # Convert to 16-bit PCM
+
+                # Add to buffer
+                self.buffer.extend(chunk)
                 
-                # Convert the audio data to a format ElevenLabs can process
-                audio_file = io.BytesIO(data)
-                
-                # Create a WAV file from the raw audio data
-                import wave
-                wav_file = io.BytesIO()
-                with wave.open(wav_file, 'wb') as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)  # 16-bit audio
-                    wf.setframerate(self.transcriber_config.sampling_rate)
-                    wf.writeframes(data)
-                
-                wav_file.seek(0)
+                # Process buffer when it reaches the configured size
+                if (
+                    len(self.buffer) / (2 * self.transcriber_config.sampling_rate)
+                ) >= self.transcriber_config.buffer_size_seconds:
+                    self.consume_nonblocking(self.buffer)
+                    self.buffer = bytearray()
                 
                 # Send to ElevenLabs for transcription using requests
                 try:
                     url = "https://api.elevenlabs.io/v1/speech-to-text"
                     headers = {"xi-api-key": self.api_key}
                     
-                    files = {"file": ("audio.wav", wav_file, "audio/wav")}
+                    files = {"file": ("audio.wav", io.BytesIO(self.buffer), "audio/wav")}
                     params = {"model_id": self.model_id}
                     
                     # Use asyncio to run the request in a thread pool
